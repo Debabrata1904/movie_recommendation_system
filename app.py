@@ -1,65 +1,79 @@
 import streamlit as st
 import pandas as pd
+import re
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import matplotlib.pyplot as plt
-from collections import Counter
-import random
 
-# Load dataset
-movies = pd.read_csv("data/movies.csv")
+# Load CSV from 'data' folder
+movies = pd.read_csv("data/movies.csv", quotechar='"', encoding='utf-8', engine='python')
 movies['genres'] = movies['genres'].str.replace('|', ' ', regex=False)
 
-# 🎨 Genre Frequency Chart
-genre_list = []
-for genre in movies['genres']:
-    genre_list.extend(genre.split())
+# Extract year from title
+movies['year'] = movies['title'].apply(lambda x: re.findall(r'\((\d{4})\)', x))
+movies['year'] = movies['year'].apply(lambda x: int(x[0]) if x else None)
 
-genre_counts = Counter(genre_list)
-
-# 🎨 Random bright colors
-random.seed(42)
-colors = ['#%06X' % random.randint(0x777777, 0xFFFFFF) for _ in genre_counts]
-
-# Plot bar chart
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.bar(genre_counts.keys(), genre_counts.values(), color=colors)
-plt.xticks(rotation=45)
-plt.title("🎬 Genre Frequency in Dataset")
-plt.xlabel("Genre")
-plt.ylabel("Count")
-plt.tight_layout()
-
-# Show chart in Streamlit
-st.subheader("📊 Genre Frequency Bar Chart")
-st.pyplot(fig)
-
-# TF-IDF and Cosine Similarity
-tfidf = TfidfVectorizer()
+# TF-IDF + Cosine Similarity
+tfidf = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf.fit_transform(movies['genres'])
-cosine_sim = cosine_similarity(tfidf_matrix)
+cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
+indices = pd.Series(movies.index, index=movies['title']).drop_duplicates()
 
-# Recommendation function
-def get_recommendations(title):
-    try:
-        idx = movies[movies['title'] == title].index[0]
-        sim_scores = list(enumerate(cosine_sim[idx]))
-        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:6]
-        movie_indices = [i[0] for i in sim_scores]
-        return movies['title'].iloc[movie_indices].tolist()
-    except IndexError:
-        return []
+# Recommendation Function
+def get_recommendations(title, genre_filter=None, from_year=None, to_year=None):
+    # Match partial title
+    matches = [t for t in indices.index if title.lower() in t.lower()]
+    if not matches:
+        return ["Movie not found."]
+    
+    idx = indices[matches[0]]
+    sim_scores = list(enumerate(cosine_sim[idx]))
+    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:]
+    recs = []
+    for i, score in sim_scores:
+        movie = movies.iloc[i]
+        if genre_filter and genre_filter.lower() not in movie['genres'].lower():
+            continue
+        if from_year and to_year:
+            if movie['year'] is None or not (from_year <= movie['year'] <= to_year):
+                continue
+        recs.append(movie['title'])
+        if len(recs) == 5:
+            break
+    return recs
 
-# Streamlit UI
+# Streamlit Interface
 st.title("🎬 Movie Recommendation System")
+st.write("Get personalized movie recommendations based on genre and release year!")
 
-selected_movie = st.selectbox("Choose a movie:", movies['title'].tolist())
+# Movie input
+movie_input = st.text_input("Enter a movie title (partial is okay):")
 
-if st.button("Recommend"):
-    recommendations = get_recommendations(selected_movie)
-    if recommendations:
-        st.subheader("Recommended Movies:")
-        for movie in recommendations:
-            st.write(f"- {movie}")
+# Genre dropdown
+genre_options = sorted(set(g for row in movies['genres'] for g in row.split()))
+genre_filter = st.selectbox("Filter by genre (optional):", [""] + genre_options)
+
+# Year range dropdown
+year_list = sorted(movies['year'].dropna().unique())
+from_year = st.selectbox("From Year (optional):", [""] + [str(y) for y in year_list])
+to_year = st.selectbox("To Year (optional):", [""] + [str(y) for y in year_list])
+
+# Convert year input to int
+from_y = float(from_year) if from_year else None
+to_y = float(to_year) if to_year else None
+
+# Button
+if st.button("Get Recommendations"):
+    if movie_input:
+        results = get_recommendations(
+            movie_input,
+            genre_filter if genre_filter else None,
+            from_y,
+            to_y
+        )
+        if results:
+            for i, title in enumerate(results, 1):
+                st.write(f"{i}. {title}")
+        else:
+            st.write("No matching recommendations found.")
     else:
-        st.warning("Movie not found in database.")
+        st.warning("Please enter a movie name.")
